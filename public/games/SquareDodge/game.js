@@ -3,7 +3,7 @@ const app = new PIXI.Application({
     height: 600,
     backgroundColor: 0x000000,
     resolution: window.devicePixelRatio || 1,
-    autoDensity: true,
+    autoDensity: true,hh
 });
 PIXI.settings.SCALE_MODE = PIXI.SCALE_MODES.NEAREST;
 document.body.appendChild(app.view);
