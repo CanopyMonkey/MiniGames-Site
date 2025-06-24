@@ -8,13 +8,17 @@ const app = new PIXI.Application({
 PIXI.settings.SCALE_MODE = PIXI.SCALE_MODES.NEAREST;
 document.body.appendChild(app.view);
 
+// Style app.view for stretch (not expand)
+app.view.style.width = '800px';
+app.view.style.height = '600px';
+
 // --- FULLSCREEN BUTTON ---
 const fsButton = document.createElement("button");
 fsButton.textContent = "Fullscreen";
 fsButton.style.position = "absolute";
 fsButton.style.top = "10px";
 fsButton.style.right = "10px";
-fsButton.style.zIndex = 1000;
+fsButton.style.zIndex = 1001; // above pause button
 fsButton.style.padding = "8px 12px";
 fsButton.style.fontSize = "16px";
 document.body.appendChild(fsButton);
@@ -29,16 +33,59 @@ fsButton.addEventListener("click", () => {
   }
 });
 
-document.addEventListener('fullscreenchange', () => {
+// --- PAUSE BUTTON ---
+const pauseButton = document.createElement("button");
+pauseButton.textContent = "Pause";
+pauseButton.style.position = "absolute";
+pauseButton.style.top = "50px";
+pauseButton.style.right = "10px";
+pauseButton.style.zIndex = 1001; // above canvas
+pauseButton.style.padding = "8px 12px";
+pauseButton.style.fontSize = "16px";
+document.body.appendChild(pauseButton);
+
+let paused = false;
+pauseButton.onclick = () => {
+  paused = !paused;
+  if (paused) {
+    pauseButton.textContent = "Resume";
+    app.ticker.stop();
+    music.pause();
+  } else {
+    pauseButton.textContent = "Pause";
+    app.ticker.start();
+    music.play();
+  }
+};
+
+// Resize handling with stretch on fullscreen change or window resize
+function resizeAppView() {
   if (document.fullscreenElement) {
+    app.view.style.width = window.innerWidth + "px";
+    app.view.style.height = window.innerHeight + "px";
+    // Resize PIXI renderer internally to native resolution to keep crispness
     app.renderer.resize(window.innerWidth, window.innerHeight);
   } else {
+    app.view.style.width = '800px';
+    app.view.style.height = '600px';
     app.renderer.resize(800, 600);
   }
+}
+window.addEventListener('resize', () => {
+  if (document.fullscreenElement) {
+    resizeAppView();
+  }
+});
+document.addEventListener('fullscreenchange', () => {
+  resizeAppView();
+  // Keep pause button visible on fullscreen (already absolute, z-index good)
 });
 
-// --------------------------
+resizeAppView(); // initial call
 
+// ---- Your existing game code follows ----
+
+// PIXI loader and assets
 const loader = new PIXI.Loader();
 
 loader
@@ -56,6 +103,22 @@ let highScore = parseInt(localStorage.getItem("highScore")) || 0;
 let titleContainer;
 let running = false;
 
+let health = 3;
+let healthText;
+let invincible = false;
+let invincibleTimer = 0;
+const INVINCIBLE_DURATION = 120;
+
+// Sounds
+const hitSound = new Howl({ src: ['assets/sounds/hit.wav'] });
+const scoreSound = new Howl({ src: ['assets/sounds/score.wav'] });
+const gameoverSound = new Howl({ src: ['assets/sounds/gameover.wav'] });
+const whooshSound = new Howl({ src: ['assets/sounds/whoosh.wav'], volume: 0.2 });
+const music = new Howl({ src: ['assets/sounds/music.wav'], loop: true, volume: 0.4 });
+
+let targetX = null;
+let dragging = false;
+
 function resizeSprite(sprite, maxWidth, maxHeight) {
     const scaleX = maxWidth / sprite.width;
     const scaleY = maxHeight / sprite.height;
@@ -64,7 +127,19 @@ function resizeSprite(sprite, maxWidth, maxHeight) {
 }
 
 function showTitleScreen() {
+    gameoverSound.stop();
+    music.stop();
+
     app.stage.removeChildren();
+    enemies = [];
+    keys = {};
+    running = false;
+    gameOver = false;
+    health = 3;
+    invincible = false;
+    invincibleTimer = 0;
+    targetX = null;
+
     titleContainer = new PIXI.Container();
     app.stage.addChild(titleContainer);
 
@@ -100,6 +175,10 @@ function showTitleScreen() {
 }
 
 function startGame() {
+    gameoverSound.stop();
+    music.stop();
+    music.play();
+
     app.stage.removeChildren();
     enemies = [];
     score = 0;
@@ -107,6 +186,10 @@ function startGame() {
     keys = {};
     enemyTimer = 0;
     running = true;
+    health = 3;
+    invincible = false;
+    invincibleTimer = 0;
+    targetX = null;
 
     const bg = new PIXI.Sprite(loader.resources["background"].texture);
     bg.texture.baseTexture.scaleMode = PIXI.SCALE_MODES.NEAREST;
@@ -128,15 +211,39 @@ function startGame() {
     scoreText.position.set(10, 10);
     app.stage.addChild(scoreText);
 
+    healthText = new PIXI.Text(`Health: ${health}`, {
+        fontFamily: "Arial", fontSize: 24, fill: 0xff4444
+    });
+    healthText.position.set(app.screen.width - 120, 10);
+    app.stage.addChild(healthText);
+
     window.addEventListener("keydown", keyDown);
     window.addEventListener("keyup", keyUp);
+
+    // Click/touch movement start
+    app.view.addEventListener("pointerdown", e => {
+        const rect = app.view.getBoundingClientRect();
+        targetX = (e.clientX - rect.left) * (app.screen.width / rect.width);
+        dragging = true;
+    });
+    app.view.addEventListener("pointermove", e => {
+        if (!dragging) return;
+        const rect = app.view.getBoundingClientRect();
+        targetX = (e.clientX - rect.left) * (app.screen.width / rect.width);
+    });
+    app.view.addEventListener("pointerup", () => {
+        dragging = false;
+    });
+    app.view.addEventListener("pointerleave", () => {
+        dragging = false;
+    });
 }
 
 app.ticker.add(gameLoop);
 
 function keyDown(e) {
     keys[e.code] = true;
-    if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Space"].includes(e.code)) {
+    if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Space", "KeyA", "KeyD"].includes(e.code)) {
         e.preventDefault();
     }
 }
@@ -146,17 +253,33 @@ function keyUp(e) {
 }
 
 function gameLoop(delta) {
-    if (!running || gameOver) return;
+    if (!running || gameOver || paused) return;
 
     const speed = 6;
-    if (keys["ArrowLeft"]) player.x -= speed;
-    if (keys["ArrowRight"]) player.x += speed;
+    if (keys["ArrowLeft"] || keys["KeyA"]) player.x -= speed;
+    if (keys["ArrowRight"] || keys["KeyD"]) player.x += speed;
 
-    // Clamp player horizontally inside screen
+    if (targetX !== null) {
+        if (Math.abs(player.x - targetX) < speed) {
+            player.x = targetX;
+            targetX = null;
+        } else {
+            player.x += (player.x < targetX ? speed : -speed);
+        }
+    }
+
     const halfW = player.width / 2;
     player.x = Math.max(halfW, Math.min(app.screen.width - halfW, player.x));
 
-    // Difficulty scaling
+    if (invincible) {
+        invincibleTimer -= delta;
+        player.alpha = player.alpha === 1 ? 0.5 : 1;
+        if (invincibleTimer <= 0) {
+            invincible = false;
+            player.alpha = 1;
+        }
+    }
+
     const spawnInterval = Math.max(20, 60 - Math.floor(score / 5));
     const fallSpeed = 5 + Math.floor(score / 10);
 
@@ -170,9 +293,22 @@ function gameLoop(delta) {
         const e = enemies[i];
         e.y += fallSpeed;
 
-        if (hitTest(e, player)) {
-            endGame();
-            return;
+        if (!invincible && hitTest(e, player)) {
+            health--;
+            updateHealthDisplay();
+            hitSound.play();
+
+            if (health <= 0) {
+                endGame();
+                return;
+            } else {
+                invincible = true;
+                invincibleTimer = INVINCIBLE_DURATION;
+            }
+
+            enemies.splice(i, 1);
+            app.stage.removeChild(e);
+            continue;
         }
 
         if (e.y > app.screen.height + 50) {
@@ -180,6 +316,14 @@ function gameLoop(delta) {
             app.stage.removeChild(e);
             score++;
             scoreText.text = "Score: " + score;
+
+            if (score % 20 === 0) {
+                scoreSound.play();
+            } else {
+                whooshSound.rate(Math.random() * 0.5 + 0.75);
+                whooshSound.volume(Math.random() * 0.3 + 0.1);
+                whooshSound.play();
+            }
         }
     }
 }
@@ -206,6 +350,10 @@ function hitTest(a, b) {
            ab.y < bb.y + bb.height;
 }
 
+function updateHealthDisplay() {
+    healthText.text = `Health: ${health}`;
+}
+
 function endGame() {
     gameOver = true;
     running = false;
@@ -216,6 +364,9 @@ function endGame() {
         highScore = score;
         localStorage.setItem("highScore", highScore);
     }
+
+    gameoverSound.play();
+    music.stop();
 
     const go = new PIXI.Sprite(loader.resources["gameover"].texture);
     resizeSprite(go, 256, 256);
